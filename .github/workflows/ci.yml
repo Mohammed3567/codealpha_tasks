@@ -27,8 +27,10 @@ jobs:
       - name: Run migrations
         run: python backend/manage.py migrate --noinput
       - name: Run backend tests
-        # "core" is the app that holds the tests; without it Django finds 0 tests
-        run: python backend/manage.py test core -v2
+        # Run from inside backend/ and target the "core" app, which holds the tests.
+        # From the repo root, Django finds 0 tests or crashes on test discovery.
+        working-directory: backend
+        run: python manage.py test core -v2
 
   e2e-tests:
     runs-on: ubuntu-latest
