@@ -65,23 +65,3 @@ docker pull ghcr.io/mohammed3567/codealpha_tasks:latest
 
 ## Task 4: Docker Web Server
 See [`CodeAlpha_Docker_Web_Server/`](CodeAlpha_Docker_Web_Server/).
-
----
-
-## About the application (original README)
-
-This repository contains the code and required files for a college project - TaskManager application. The backend is a Django + Django REST Framework API (SQLite for the POC). The frontend is a React + TypeScript SPA that consumes the API.
-
-Quick start (Windows / PowerShell):
-
-```powershell
-python -m venv venv
-venv\Scripts\Activate.ps1
-pip install -r requirements.txt
-cd backend
-python manage.py migrate
-python manage.py createsuperuser
-python manage.py runserver
-```
-
-API root: `http://127.0.0.1:8000/api/`
