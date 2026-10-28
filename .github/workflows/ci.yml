@@ -1,10 +1,15 @@
-name: CI
+name: CI/CD
 
 on:
   push:
     branches: [ main ]
   pull_request:
     branches: [ main ]
+  workflow_dispatch:
+
+permissions:
+  contents: read
+  packages: write
 
 jobs:
   backend-tests:
@@ -12,7 +17,7 @@ jobs:
     steps:
       - uses: actions/checkout@v4
       - name: Set up Python
-        uses: actions/setup-python@v4
+        uses: actions/setup-python@v5
         with:
           python-version: '3.11'
       - name: Install Python deps
@@ -20,20 +25,18 @@ jobs:
           python -m pip install --upgrade pip
           pip install -r requirements.txt
       - name: Run migrations
-        run: |
-          python backend/manage.py migrate --noinput
+        run: python backend/manage.py migrate --noinput
       - name: Run backend tests
-        run: |
-          python backend/manage.py test -v2
+        # "core" is the app that holds the tests; without it Django finds 0 tests
+        run: python backend/manage.py test core -v2
 
   e2e-tests:
     runs-on: ubuntu-latest
     needs: backend-tests
-    services: {}
     steps:
       - uses: actions/checkout@v4
       - name: Set up Python
-        uses: actions/setup-python@v4
+        uses: actions/setup-python@v5
         with:
           python-version: '3.11'
       - name: Set up Node.js
@@ -45,15 +48,14 @@ jobs:
           python -m pip install --upgrade pip
           pip install -r requirements.txt
       - name: Run migrations
-        run: |
-          python backend/manage.py migrate --noinput
+        run: python backend/manage.py migrate --noinput
       - name: Install frontend deps
         run: |
           cd frontend
           npm ci
       - name: Install Playwright browsers
-        run: |
-          npx playwright install --with-deps
+        run: npx playwright install --with-deps
+        working-directory: frontend
       - name: Start backend server
         run: |
           nohup python backend/manage.py runserver 0.0.0.0:8000 &
@@ -67,35 +69,88 @@ jobs:
         run: |
           cd frontend
           npm run test:e2e
-  deploy:
-    runs-on: ubuntu-latest
-    needs: e2e-tests
 
+  build-and-push:
+    # Builds the Docker image, smoke-tests it, and pushes it to a container registry (GHCR)
+    runs-on: ubuntu-latest
+    needs: backend-tests
+    outputs:
+      image: ${{ steps.meta.outputs.tags }}
     steps:
       - uses: actions/checkout@v4
 
-      - name: Build Docker Image
-        run: |
-          docker build -t taskmanager-app .
+      - name: Image name and tags
+        id: meta
+        uses: docker/metadata-action@v5
+        with:
+          images: ghcr.io/${{ github.repository }}
+          tags: |
+            type=raw,value=latest
+            type=sha
 
-      - name: Create SSH Key
+      - name: Build image (not pushed yet)
+        uses: docker/build-push-action@v6
+        with:
+          context: .
+          load: true
+          tags: smoke-test:ci
+
+      - name: Smoke test the container
+        run: |
+          docker run -d --name smoke -p 8000:8000 smoke-test:ci
+          for i in $(seq 1 30); do
+            if curl -fsS http://127.0.0.1:8000/api/auth/csrf/ > /dev/null; then
+              echo "Container healthy after ${i}s"
+              echo "### Smoke test passed (healthy after ${i}s)" >> "$GITHUB_STEP_SUMMARY"
+              exit 0
+            fi
+            sleep 1
+          done
+          echo "Container did not become healthy"
+          docker logs smoke
+          exit 1
+
+      - name: Log in to GitHub Container Registry
+        if: github.event_name == 'push' && github.ref == 'refs/heads/main'
+        uses: docker/login-action@v3
+        with:
+          registry: ghcr.io
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Push image to registry
+        if: github.event_name == 'push' && github.ref == 'refs/heads/main'
+        uses: docker/build-push-action@v6
+        with:
+          context: .
+          push: true
+          tags: ${{ steps.meta.outputs.tags }}
+
+      - name: Pipeline summary
+        if: always()
+        run: |
+          echo "### Build summary" >> "$GITHUB_STEP_SUMMARY"
+          echo "- Commit: \`${{ github.sha }}\`" >> "$GITHUB_STEP_SUMMARY"
+          echo "- Image tags: \`${{ steps.meta.outputs.tags }}\`" >> "$GITHUB_STEP_SUMMARY"
+          echo "- Job status: ${{ job.status }}" >> "$GITHUB_STEP_SUMMARY"
+
+  deploy:
+    # Optional: only runs when the repo variable ENABLE_DEPLOY is set to "true"
+    # and the EC2 secrets (TM_SSH_KEY, EC2_USER, EC2_HOST) exist.
+    runs-on: ubuntu-latest
+    needs: [build-and-push, e2e-tests]
+    if: github.event_name == 'push' && github.ref == 'refs/heads/main' && vars.ENABLE_DEPLOY == 'true'
+    steps:
+      - name: Create SSH key
         run: |
           echo "${{ secrets.TM_SSH_KEY }}" > key.pem
           chmod 600 key.pem
 
-      - name: Export Docker Image
+      - name: Deploy on EC2 (pull from registry)
         run: |
-          docker save taskmanager-app -o taskmanager-app.tar
-
-      - name: Copy Image To EC2
-        run: |
-          scp -o StrictHostKeyChecking=no -i key.pem taskmanager-app.tar ${{ secrets.EC2_USER }}@${{ secrets.EC2_HOST }}:~
-
-      - name: Deploy On EC2
-        run: |
+          IMAGE="ghcr.io/${GITHUB_REPOSITORY,,}:latest"
           ssh -o StrictHostKeyChecking=no -i key.pem ${{ secrets.EC2_USER }}@${{ secrets.EC2_HOST }} "
-            sudo docker load -i taskmanager-app.tar &&
-            sudo docker stop \$(sudo docker ps -q) || true &&
-            sudo docker rm \$(sudo docker ps -aq) || true &&
-            sudo docker run -d -p 8000:8000 taskmanager-app
+            sudo docker pull $IMAGE &&
+            (sudo docker rm -f taskmanager || true) &&
+            sudo docker run -d --name taskmanager --restart unless-stopped -p 8000:8000 $IMAGE
           "
