@@ -1,0 +1,7 @@
+services:
+  web:
+    build: .
+    container_name: codealpha-web
+    ports:
+      - "8080:80"          # your PC port 8080 -> container port 80
+    restart: unless-stopped
