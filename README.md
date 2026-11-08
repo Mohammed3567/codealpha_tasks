@@ -2,7 +2,7 @@
 
 ![CI/CD](https://github.com/Mohammed3567/codealpha_tasks/actions/workflows/ci.yml/badge.svg)
 
-This repository holds my submissions for the CodeAlpha DevOps internship (1 Oct to 31 Oct 2026).
+This repository holds my submissions for the CodeAlpha DevOps internship (1 Oct to 3o Oct 2026).
 
 | Task | Topic | Where |
 |------|-------|-------|
